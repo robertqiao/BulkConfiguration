@@ -1,0 +1,1114 @@
+#!/bin/bash
+
+ #
+ # Review and Support bulk configuration for the system parameter 
+ # Version: 1.0
+ # Author: Robert Qiao, Alcatel-Lucent
+ # Alcatel-Lucent Proprietary
+ # Use pursuant to Company instructions
+ # Copyright(c) 2014 Alcatel-Lucent All Rights Reserved
+ #
+ # Remember to update the version each time the script is changed
+
+ # Modification history
+
+version="1.1"
+customer="Alcatel-Lucent"
+
+#Argruments
+retrieveargument="retrieve"
+provisionagrument="provision"
+
+#Tool
+AWK="/usr/bin/awk"
+CAT="/bin/cat"
+CHOWN="/bin/chown"
+CHMOD="/bin/chmod"
+CP="/bin/cp"
+CUT="/usr/bin/cut"
+GREP="/bin/grep"
+ID="/usr/bin/id"
+MV="/bin/mv"
+PWD="/bin/pwd"
+UNAME="/bin/uname"
+
+
+#Variables
+linuxsystem="Linux"
+userid="uid=0(root)"
+tempdirectory="/opt/bulkconfig"
+bulkconfigfile="BTSNP.ini"
+bulktemplatefile="BTSNP_Template.ini"
+bulkconfigoldfile="BTSNP.ini.old"
+logfile="${tempdirectory}/bulkconfig.log"
+networkconfigfile="/etc/sysconfig/network"
+nsswitchconfigfile="/etc/nsswitch.conf"
+hostsconfigfile="/etc/hosts"
+dnsconfigfile="/etc/resolv.conf"
+radiusservconfigfile="/etc/raddb/server"
+radiusmappingconfigfile="/etc/raddb/rolemapping.conf"
+snmpdconfigfile="/etc/opt/ALUpmfmagt/snmpd.conf"
+pmfmagentconfigfile="/etc/opt/ALUpmfmagt/pmfmagent.conf"
+ntpservconfigfile="/etc/ntp.conf"
+ntpsteptickerfile="/etc/ntp/step-tickers"
+serverclockfile="/etc/sysconfig/clock"
+ldapconfigfile="/etc/ldap.conf"
+
+networkconfigfileold="/etc/sysconfig/network.old"
+nsswitchconfigfileold="/etc/nsswitch.conf.old"
+hostsconfigfileold="/etc/hosts.old"
+dnsconfigfileold="/etc/resolv.conf.old"
+radiusservconfigfileold="/etc/raddb/server.old"
+radiusmappingconfigfileold="/etc/raddb/rolemapping.conf.old"
+snmpdconfigfileold="/etc/opt/ALUpmfmagt/snmpd.conf.old"
+pmfmagentconfigfileold="/etc/opt/ALUpmfmagt/pmfmagent.conf.old"
+ntpservconfigfileold="/etc/ntp.conf.old"
+ntpsteptickerfileold="/etc/ntp/step-tickers.old"
+serverclockfileold="/etc/sysconfig/clock.old"
+ldapconfigfileold="/etc/ldap.conf.old"
+checkradiusconfig="YES"
+checksnampconfig="YES"
+checkhostsconfig="YES"
+checkdnsconfig="YES"
+checkntpconfig="YES"
+checktimezoneconfig="YES"
+checknetworkconfig="YES"
+checkldapconfig="YES"
+modifyradius="YES"
+#function 
+#
+#   Script to configure logrotate for security log
+#
+firstconfiglogrotate="YES"
+function configlogrotate {
+    securitylogrotate="/etc/logrotate.d/bulklog"
+    >${securitylogrotate}
+    if [ "${firstconfiglogrotate}" == "YES" ]; then
+        ${CHMOD} 0644 ${securitylogrotate} 2>/dev/null
+        ${CHOWN} root:root ${securitylogrotate}
+        firstconfiglogrotate="NO"
+    fi
+#   Create the program, remember to back slash shell special characters - like $, unless using shell replacement
+${CAT} << ENDOFPROGRAM >>${securitylogrotate}
+${logfile} {
+        size=3M
+        rotate 5
+}
+ENDOFPROGRAM
+}
+#
+# retrieve serverhost configuration
+#
+function retrievehostconfig
+{
+#      retrieve hostname
+       if [ ! -r ${networkconfigfile} ]; then
+          echo "WARNING: The ${networkconfigfile} file does not exist."
+       else
+          if [ -r ${bulkconfigfile} ]; then
+             hostname=`cat $networkconfigfile | awk -F '=' '{ if($1 == "HOSTNAME") print }'`
+             if [ "${hostname}" != "" ]; then
+                len=${#hostname}
+                max="64"
+                if [ "$len" -le "$max" ]; then
+                   linenum=$(grep -n "\[DNSConfig\]" ${bulkconfigfile} | cut -d: -f1)
+                   linenum=$(($linenum - 1))
+                   sed -i "${linenum} i ${hostname}" ${bulkconfigfile} 
+                else
+                   echo "ERROR: The length of hostname(${hostname}) exceed 64."
+                fi
+             fi
+          fi
+       fi
+#      retrieve hostname of name service switch configuration     
+       if [ ! -r ${nsswitchconfigfile} ]; then
+          echo "WARNING: The ${nsswitchconfigfile} file does not exist."
+       else
+          if [ -r ${bulkconfigfile} ]; then
+             hosts=`cat $nsswitchconfigfile | awk -F ':' '{if($1 == "hosts") { gsub(/:/, "="); print } }'`
+             if [ "${hosts}" != "" ]; then
+                linenum=$(grep -n "\[DNSConfig\]" ${bulkconfigfile} | cut -d: -f1)
+                linenum=$(($linenum - 1))
+                sed -i "${linenum} i ${hosts}" ${bulkconfigfile}
+             fi
+          fi
+       fi
+#     retrieve hostname database
+       if [ ! -r ${hostsconfigfile} ]; then
+          echo "WARNING: The ${hostsconfigfile} file does not exist."
+       else
+          if [ -r ${bulkconfigfile} ]; then
+            # hostsbase=`${GREP} -v ^::1 ${hostsconfigfile} | ${GREP} -v ^127 | ${GREP} -v ^$ | awk '{print "HostNameDataBase=" $0}'`
+             hostsbase=`${GREP} -v ^# ${hostsconfigfile} | ${GREP} -v ^$ | awk '{print "HostNameDataBase=" $0}'`
+             if [ "${hostsbase}" != "" ]; then
+                linenum=$(grep -n "\[DNSConfig\]" ${bulkconfigfile} | cut -d: -f1)
+                linenum=$(($linenum - 1))
+                PREV_IFS=$IFS
+                IFS=$'\n'
+
+                for var in $hostsbase
+                do
+        
+                   sed -i "${linenum} i ${var}" ${bulkconfigfile}
+                done
+                 IFS=$PREV_IFS
+      
+             fi #end hostsbase
+          fi #end bulkconfigfile
+       fi  #end hostsconfigfile
+
+             
+       
+}
+#
+# retrieve dns configuration
+#
+
+function retrievednsconfig
+{
+    if [ ! -r ${dnsconfigfile} ]; then
+       echo "WARNING: The ${dnsconfigfile} file does not exist." 
+    else
+         if [ -r ${bulkconfigfile} ]; then
+          linenum=$(grep -n "\[NTPConfig\]" ${bulkconfigfile} | cut -d: -f1)
+          linenum=$(($linenum - 1))
+          result=`${GREP} -v "^#" "${dnsconfigfile}" 2>/dev/null | ${AWK} '
+          BENGIN{
+          }
+          ($1 == "domain"){
+                  print "domain=" $2 
+          }
+          ($1 == "nameserver"){
+                  print "nameserver=" $2 
+          }
+          ($1 == "options"){
+                 $1=$1 "="
+                 print 
+               
+         }
+         END{
+         }' 2>/dev/null`
+         if [ "${result}" != "" ]; then 
+            PREV_IFS=$IFS
+            IFS=$'\n' 
+            for var in $result
+            do 
+                 sed -i "${linenum} a ${var}" ${bulkconfigfile} 
+                 linenum=$(($linenum+1))
+            done
+            IFS=$PREV_IFS
+         fi
+       fi #end bulkconfigfile
+   fi
+}
+#
+# retrieve ntp configuration
+#
+function retrieventpconfig
+{
+   if [ ! -r ${ntpservconfigfile} ]; then
+     echo "WARNING: The ${ntpservconfigfile} file does not exist."
+   else
+     if [ -r ${bulkconfigfile} ]; then
+       ntpserver=`cat $ntpservconfigfile | awk '{ if ($1 == "server") { gsub($1,""$1"="); print}  }'`
+       
+       if [ "${ntpserver}" != "" ]; then
+          linenum=$(grep -n "\[TimeZoneConfig\]" ${bulkconfigfile} | cut -d: -f1)
+          linenum=$(($linenum - 1))
+          PREV_IFS=$IFS
+          IFS=$'\n'
+          for var in $ntpserver
+          do
+             sed -i "${linenum} a ${var}"   ${bulkconfigfile}
+             linenum=$(($linenum+1))
+          done
+          IFS=$PREV_IFS         
+       fi
+
+    fi
+  fi
+
+  if [ ! -r ${ntpsteptickerfile} ]; then
+     echo "WARNING: The ${ntpsteptickerfile} file does not exist."
+  else
+     if [ -r ${bulkconfigfile} ]; then
+       ntpstepticker=`${GREP} -v '^#' ${ntpsteptickerfile} | awk '{print "ntpstepticker= " $0}'`
+       if [ "${ntpstepticker}" != "" ]; then
+          linenum=$(grep -n "\[TimeZoneConfig\]" ${bulkconfigfile} | cut -d: -f1)
+          linenum=$(($linenum - 1))
+          PREV_IFS=$IFS
+          IFS=$'\n'
+
+          for var in $ntpstepticker
+          do
+             sed -i "${linenum} a ${var}"   ${bulkconfigfile}
+          done
+          IFS=$PREV_IFS
+       fi
+
+    fi
+  fi
+  
+  
+}
+#
+# retrieve timezone configuration
+#
+function retrievetimezoneconfig
+{
+    
+  if [ ! -r ${serverclockfile} ]; then
+     echo "WARNING: The ${serverclockfile} file does not exist."
+  else
+    if [ -r ${bulkconfigfile} ]; then
+       timezone=`${GREP} -v '^#' ${serverclockfile} | awk -F '=' '{ if($1 == "ZONE") print $0}'`
+       if [ "${timezone}"  != "" ]; then
+          linenum=$(grep -n "\[NetWorkConfig\]" ${bulkconfigfile} | cut -d: -f1)
+          linenum=$(($linenum - 1))
+          sed -i "${linenum} a ${timezone}"   ${bulkconfigfile}
+       fi
+    fi
+  fi
+}
+#
+# retrieve network configuration
+#
+function retrievenetworkconfig
+{
+   interfacename=`ip route | grep -v "proto kernel" | awk '/default/ {print $5}'`
+   defaultgatewayv4=`ip route | grep -v "proto kernel" | awk '/default/ {print $3}'`
+   defaultgatewayv6=`ip route | grep -v "proto kernel" | awk '/default/ {print $3}'` 
+   PhyInterface="${interfacename}  ${defaultgatewayv4}  ${defaultgatewayv6}"
+   if [ "${PhyInterface}" != "" ]; then
+      PhyInterface=""PhyInterface=" $PhyInterface"
+      linenum=$(grep -n "\[SNMPConfig\]" ${bulkconfigfile} | cut -d: -f1)
+      if [ -r ${bulkconfigfile} ]; then
+          sed -i "${linenum} i ${PhyInterface}" ${bulkconfigfile}
+          sed -i  "${linenum} a "$'\n'" " ${bulkconfigfile}
+      fi
+   fi
+   
+   phyinterface=`ifconfig -a | ${AWK} '/^[^ ]/{print $1}'`
+   
+   linenum=$(grep -n "\[SNMPConfig\]" ${bulkconfigfile} | cut -d: -f1)
+   linenum=$(($linenum - 1))
+   for var in $phyinterface
+   do
+      ipv4addr=`ip addr show label $var | sed -e's/^.*inet \([^ ]*\)\/.*$/\1/;t;d'`
+      ipv4mask=`ifconfig $var | grep Mask | cut -d":" -f4`
+      ipv6addr=`ip addr show label $var scope global | awk '$1 == "inet6" { print $2}'`
+      autoneg=`ethtool $var |grep Auto-neg |  cut -d":" -f2`
+      duplex=`ethtool $var |grep Duplex |  cut -d":" -f2`
+      speed=`ethtool $var |grep Speed |  cut -d":" -f2`
+      mtu=`netstat -i | awk '{if($1 == "$var") print $2}'`
+      if [ "${ipv4addr}" != "" ]; then
+         Ipv4=""Ipv4=" ${var} ${ipv4addr} ${ipv4mask}"
+         sed -i "${linenum} a ${Ipv4} " ${bulkconfigfile}
+         linenum=$(($linenum + 1))
+      fi
+      if [ "${ipv6addr}" != "" ]; then
+          Ipv6=`echo ""Ipv6=" ${var} ${ipv6addr}"  | tr '\n' ' '`
+          sed -i  "${linenum} a ${Ipv6} " ${bulkconfigfile}
+         linenum=$(($linenum + 1))
+      fi
+      ethtoolopts="$autoneg $duplex $speed $mtu"
+      if [ "${ethtoolopts}" != "" ]; then
+         ethtoolopts=""EthToolOpts=" $var $ethtoolopts"
+         sed -i  "${linenum} a ${ethtoolopts} " ${bulkconfigfile}
+         linenum=$(($linenum + 1))
+      fi
+        sed -i  "${linenum} a "$'\n'" " ${bulkconfigfile}
+        linenum=$(($linenum + 1))
+   done
+   
+}
+#
+#  retrieve radius configuration
+#
+function retrieveradiusconfig 
+{
+
+    if [ ! -r ${radiusservconfigfile} ]; then
+       echo "WARNING: The ${radiusservconfigfile} file does not exist."
+    else
+       if [ -r ${bulkconfigfile} ]; then
+          radiusserver=`cat $radiusservconfigfile | awk '/^[^#]/{print}'`
+          if [ "${radiusserver}" != "" ]; then
+             linenum=$(grep -n "\[LdapConfig\]" ${bulkconfigfile} | cut -d: -f1)
+             linenum=`expr $linenum - 1`
+             PREV_IFS=$IFS
+             IFS=$'\n'
+
+             for var in $radiusserver
+             do
+                 server="server="
+                 sed -i "${linenum} i ${server}${var}" ${bulkconfigfile}
+                 linenum=$(($linenum+1))
+             done
+             IFS=$PREV_IFS
+          fi #end radiusserver
+       fi #end bulkconfigfile
+    fi  #end radiusservconfigfile
+ 
+    if [ ! -r ${radiusmappingconfigfile} ]; then
+       echo "WARNING: The ${radiusmappingconfigfile} file does not exist."
+    else
+       if [ -r ${bulkconfigfile} ]; then
+          radiusmapping=`cat $radiusmappingconfigfile | awk '/^[^#]/{print}'`
+          if [ "${radiusmapping}" != "" ]; then
+             linenum=$(grep -n "\[LdapConfig\]" ${bulkconfigfile} | cut -d: -f1)
+             linenum=`expr $linenum - 1` 
+             PREV_IFS=$IFS
+             IFS=$'\n'
+             for var in $radiusmapping
+             do
+                 rolemap="RoleMap="
+                 sed -i "${linenum} i ${rolemap}${var}" ${bulkconfigfile}
+             done
+             IFS=$PREV_IFS
+          fi #end radiusmapping
+       fi #end bulkconfigfile
+    fi #end radiusmappingconfigfile
+       
+}
+#
+#  retrieve snmp  configuration
+#
+function retrievesnmpconfig {
+
+
+    if [ ! -r ${snmpdconfigfile} ]; then
+       echo "WARNING: The ${snmpdconfigfile} file does not exist"
+    else
+#      retrieve rocommunity's value
+       linenum=$(grep -n "\[RadiusConfig\]" ${bulkconfigfile} | cut -d: -f1)
+       linenum=`expr $linenum - 1`
+       rocommunity=`cat $snmpdconfigfile | awk '{ if ($1 == "rocommunity") { gsub($1,""$1"="); print}  }'`
+       rocommunity6=`cat $snmpdconfigfile | awk '{ if ($1 == "rocommunity6") { gsub($1,""$1"="); print}  }'`
+       syslocation=`cat $snmpdconfigfile | awk '{ if ($1 == "syslocation") { gsub($1,""$1"="); print} }'`
+       informsink=`cat $snmpdconfigfile | awk '{if ($1 == "informsink") { gsub($1,""$1"="); print} }'`
+       trapcommunity=`cat $snmpdconfigfile | awk '{if ($1 == "trapcommunity") { gsub($1,""$1"="); print} }'`
+       disk=`cat $snmpdconfigfile | awk '{if ($1 == "disk") { gsub($1,""$1"="); print} }'`
+      # rwuser=`cat $snmpdconfigfile | awk '{ if ($1 == "rwuser") { gsub($1,""$1"="); print} }'`
+      # rouser=`cat $snmpdconfigfile | awk '{ if ($1 == "rouser") { gsub($1,""$1"="); print}  }'`
+      # rwcommunity=`cat $snmpdconfigfile | awk '{ if ($1 == "rwcommunity") { gsub($1,""$1"="); print}  }'`
+      # syscontact=`cat $snmpdconfigfile | awk '{ if ($1 == "syscontact") { gsub($1,""$1"="); print} }'`
+      # trap2sink=`cat $snmpdconfigfile | awk '{if ($1 == "trap2sink") { gsub($1,""$1"="); print} }'`
+      # clientaddr=`cat $snmpdconfigfile | awk '{if ($1 == "clientaddr") { gsub($1,""$1"="); print} }'`
+      # authtrapenable=`cat $snmpdconfigfile | awk '{if ($1 == "authtrapenable")  { gsub($1,""$1"="); print} }'`
+    
+
+       if [ -r ${bulkconfigfile} ]
+       then
+          if [ "${rocommunity}" != "" ]; then
+             sed -i "${linenum} i ${rocommunity}" ${bulkconfigfile}
+          fi
+          if [ "${rocommunity6}" != "" ]; then
+             sed -i "${linenum} i ${rocommunity6}" ${bulkconfigfile}
+          fi
+          if [ "${trap2sink}" != "" ]; then
+             PREV_IFS=$IFS
+             IFS=$'\n'
+             for var in $trap2sink
+             do
+                 sed -i "${linenum} i ${var}" ${bulkconfigfile}
+             done
+             IFS=$PREV_IFS
+          fi
+          if [ "${informsink}" != "" ]; then
+             PREV_IFS=$IFS
+             IFS=$'\n'
+             for var in $informsink
+             do
+                 sed -i "${linenum} i ${var}" ${bulkconfigfile}
+             done
+             IFS=$PREV_IFS
+          fi
+          if [ "${trapcommunity}" != "" ]; then
+             sed -i "${linenum} i ${trapcommunity}" ${bulkconfigfile} 
+          fi
+          if [ "${disk}" != "" ]; then
+             sed -i "${linenum} i ${disk}" ${bulkconfigfile}
+          fi
+       #   if [ "${clientaddr}" != "" ]; then
+       #      sed -i "${linenum} i ${clientaddr}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${authtrapenable}" != "" ]; then
+       #      sed -i "${linenum} i ${authtrapenable}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${syscontact}" != "" ]; then
+       #      sed -i "${linenum} i ${syscontact}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${syslocation}" != "" ]; then
+       #      sed -i "${linenum} i ${syslocation}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${rwcommunity}" != "" ]; then
+       #      sed -i "${linenum} i ${rwcommunity}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${rouser}" != "" ]; then
+       #      sed -i "${linenum} i ${rouser}" ${bulkconfigfile}
+       #   fi
+       #   if [ "${rwuser}" != "" ]; then
+       #      sed -i "${linenum} i ${rwuser}" ${bulkconfigfile} 
+       #   fi
+      fi # end bulkconfigfile
+    fi #end  snmpdconfig
+  
+   if [ ! -r ${pmfmagentconfigfile} ]; then
+       echo "WARNING: The ${pmfmagentconfigfile} file does not exist."
+   else   
+       pm_cpu_thresholds=`cat ${pmfmagentconfigfile} | awk ' { if ($1 == "pm_cpu_thresholds")  { gsub($1,""$1"="); print} }'`
+       pm_mem_thresholds=`cat ${pmfmagentconfigfile} | awk ' { if ($1 == "pm_mem_thresholds")  { gsub($1,""$1"="); print} }'`
+       SourceIp=`cat ${pmfmagentconfigfile} | awk '{if ($1 == "SourceIp") {gsub($1,""$1"="); print} }'`
+
+       linenum=$(grep -n "\[RadiusConfig\]" ${bulkconfigfile} | cut -d: -f1)
+       linenum=`expr $linenum - 1`
+
+       if [ -f ${bulkconfigfile} ]
+       then
+          if [ "${SourceIp}" != "" ]; then
+             sed -i "${linenum} i ${SourceIp}" ${bulkconfigfile}
+          fi
+          if [ "${pm_cpu_thresholds}" != "" ]; then
+             sed -i "${linenum} i ${pm_cpu_thresholds}" ${bulkconfigfile}
+          fi
+          if [ "${pm_mem_thresholds}" != "" ]; then
+             sed -i "${linenum} i ${pm_mem_thresholds}" ${bulkconfigfile}
+          fi
+       fi #end bulkconfigfile
+   fi #end pmfmagentconfigfile
+    
+}
+#
+# retrieve ldap configuration
+#
+function retrieveldapconfig
+{
+   if [ ! -r ${ldapconfigfile} ]; then
+      echo "WARNING: The ${ldapconfigfile} file does not exist" 
+   else
+      host=`cat ${ldapconfigfile} | awk '{ if ($1 == "host")  {gsub($1,""$1"="); print} }'`
+      base=`cat ${ldapconfigfile} | awk '{ if ($1 == "base")  {gsub($1,""$1"="); print} }'`
+      uri=`cat ${ldapconfigfile} | awk '{ if ($1 == "uri")  {gsub($1,""$1"="); print} }'`
+      port=`cat ${ldapconfigfile} | awk '{ if ($1 == "port")  {gsub($1,""$1"="); print} }'`
+      passwd=`cat ${nsswitchconfigfile} | awk -F ':' '{ if($1 == "passwd") {gsub(/:/,"="); print} }'` 
+      shadow=`cat ${nsswitchconfigfile} | awk -F ':' '{ if($1 == "shadow") {gsub(/:/,"="); print} }'`
+      group=`cat ${nsswitchconfigfile} | awk -F ':' '{ if($1 == "group") {gsub(/:/,"="); print} }'`
+      netgroup=`cat ${nsswitchconfigfile} | awk -F ':' '{ if($1 == "netgroup") {gsub(/:/,"="); print} }'`
+      sudoers=`cat ${nsswitchconfigfile} | awk -F ':' '{ if($1 == "sudoers") {gsub(/:/,"="); print} }'`
+      
+       
+      linenum=$(grep -n "\[EndConfig\]" ${bulkconfigfile} | cut -d: -f1)
+      linenum=`expr $linenum - 1`
+
+      if [ -f ${bulkconfigfile} ]
+       then
+          if [ "${host}" != "" ]; then
+             sed -i "${linenum} a ${host}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${base}" != "" ]; then
+             sed -i "${linenum} a ${base}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${uri}" != "" ]; then
+             sed -i "${linenum} a ${uri}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${port}" != "" ]; then
+             sed -i "${linenum} a ${port}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${passwd}" != "" ]; then
+             sed -i "${linenum} a ${passwd}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${shadow}" != "" ]; then
+             sed -i "${linenum} a ${shadow}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${group}" != "" ]; then
+             sed -i "${linenum} a ${group}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${netgroup}" != "" ]; then
+             sed -i "${linenum} a ${netgroup}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+          if [ "${sudoers}" != "" ]; then
+             sed -i "${linenum} a ${sudoers}" ${bulkconfigfile}
+             linenum=`expr $linenum + 1`
+          fi
+
+      fi #end bulkconfigfile
+
+   fi
+}
+###############################################
+#    provision                            #
+###############################################
+#
+# provision hosts
+#
+function provisionhosts
+{
+   if [ ! -r ${bulkconfigfile} ]; then
+      echo "ERROR: The ${bulkconfigfile} file does not exist"
+   else
+      if [ ! -r ${networkconfigfile} ]; then
+         echo "WARNING: The ${networkconfigfile} file does not exist."
+      else
+        hostname=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "HOSTNAME" && $2 != "") print}'`
+        if [ -n "${hostname}" ]; then
+           # backup networkconfigfile
+           ${CP} -rp $networkconfigfile $networkconfigfileold 
+           sed -i "s/^HOSTNAME.*$/$hostname/" $networkconfigfile
+        fi
+      fi # end networkconfigfile
+     
+      if [ ! -r ${nsswitchconfigfile} ]; then
+         echo "WARNING: The ${nsswitchconfigfile} file does not exist."
+      else
+         hostTag=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "HostTag") {gsub(""$1"=","hosts: "); print} }'`
+         if [ -n "${hostTag}" ]; then
+            ${CP} -rp  $nsswitchconfigfile  $nsswitchconfigfileold
+            sed -i "s/^hosts.*$/$hostTag/" $nsswitchconfigfile
+         fi
+      fi # end nsswitchconfigfile
+
+      if [ ! -r ${hostsconfigfile} ]; then
+         echo "WARNING: The ${hostsconfigfile} file does not exist."
+      else
+         hostNameDatabase=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "HostNameDataBase") print $2}'`
+         if [ -n "${hostNameDatabase}" ]; then
+            ${CP} -rp $hostNameDatabase  $hostNameDatabaseold
+            sed -i '/^127/ !{/^::1/!d}'  ${hostsconfigfile}
+            sed -i '$a  '"${hostNameDatabase}"''  ${hostsconfigfile}
+         fi
+      fi
+   fi # end bulkconfigfile
+}
+#
+# provision dns 
+#
+function provisiondns
+{
+   if [ ! -r ${bulkconfigfile} ]; then
+      echo "ERROR: The ${bulkconfigfile} file does not exist"
+   else
+      if [ ! -r ${dnsconfigfile} ]; then
+         echo "WARNING: The ${dnsconfigfile} file does not exist."
+      else
+         dnsserver=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "domain" || $1 == "nameserver" || $1 == "options") {gsub("="," "); print} }'`
+         if [ -n "${dnsserver}" ]; then
+            ${CP} -rp $dnsconfigfile  $dnsconfigfileold        
+            # delete all configuration in dns configure file
+            sed -i '/^[^#]/d'  $dnsconfigfile
+            PREV_IFS=$IFS
+            IFS=$'\n'
+
+            for var in $dnsserver
+            do
+               sed -i '$a  '"${var}"'' ${dnsconfigfile}
+            done
+            IFS=$PREV_IFS
+         fi
+         
+     fi #end dnsconfigfile
+   fi #end bulkconfigfile
+}
+#
+# provision ntp
+#
+function provisionntp
+{
+   if [ ! -r ${bulkconfigfile} ]; then
+      echo "ERROR: The ${bulkconfigfile} file does not exist"
+   else
+      if [ ! -r ${ntpservconfigfile} ]; then
+         echo "WARNING: The ${ntpservconfigfile} file does not exist."
+      else
+         ntpserver=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "server") {gsub("="," "); print} }'`
+         if [ -n "${ntpserver}" ]; then
+            ${CP} -rp $ntpservconfigfile  $ntpservconfigfileold
+            sed -i '/^[ ]*server/d' $ntpservconfigfile
+            PREV_IFS=$IFS
+            IFS=$'\n'
+            linenum=`grep -n "^[ ]*server"  $ntpservconfigfile | cut -d: -f1 | tail -1`
+            if [ -n "${linenum}" ]; then
+               for var in $ntpserver
+               do
+                   sed -i "${linenum} a ${var}" ${ntpservconfigfile}
+               done
+            else 
+               for var in $ntpserver
+               do
+                   sed -i '$a  '"${var}"'' ${ntpservconfigfile}
+               done
+            fi # end linenum
+            IFS=$PREV_IFS
+         fi # end ntpserver
+      fi #end ntpservconfigfile
+   
+      if [ ! -r ${ntpsteptickerfile} ]; then
+         echo "WARNING: The ${ntpsteptickerfile} file does not exist."
+      else
+         ntpstepticker=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "ntpstepticker") {gsub("="," "); print} }'`
+         if [ -n "${ntpstepticker}" ]; then
+            ${CP} -rp $ntpsteptickerfile $ntpsteptickerfileold
+            # delete all configuration
+            sed -i '/^[^#]/d' $ntpsteptickerfile
+            PREV_IFS=$IFS
+            IFS=$'\n'
+            for var in $ntpstepticker
+            do
+              sed -i '$a  '"${var}"'' ${ntpsteptickerfile}
+            done
+         fi #end ntpstepticker
+      fi #end ntpsteptickerfile
+     
+      if [ ! -r ${serverclockfile} ]; then
+         echo "WARNING: The ${serverclockfile} file does not exist."
+      else
+         timezone=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "ZONE") {gsub("="," "); print} }'`
+         if [ -n "${timezone}" ]; then
+            ${CP} -rp $serverclockfile  $serverclockfileold
+            # delete all configuration in $serverclockfile
+            echo "====test debug"
+          #  sed -i "s/^ZONE.*$/$timezone/" $snmpdconfigfile
+          #  sed -i "s/^ZONE.*$/$timezone/" $serverclockfile
+            sed -i 's/^ZONE.*$/'"$timezone"'/'  $serverclockfile
+            echo "===for test"
+         fi # end zone
+      fi #end serverclockfile
+   fi #end bulkconfigfile
+}
+#
+# provision network 
+#
+function provisionnetwork
+{
+      if [ ! -r ${bulkconfigfile} ]; then
+         echo "ERROR: The ${bulkconfigfile} file does not exist"
+      else
+        
+
+}
+#
+#  provision snmp 
+#
+function provisionsnmp
+{
+      if [ ! -r ${bulkconfigfile} ]; then
+         echo "ERROR: The ${bulkconfigfile} file does not exist"
+      else
+         if [ ! -r ${snmpdconfigfile} ]; then
+            echo "WARNING: The ${snmpdconfigfile} file does not exist" 
+         else
+           rwuser=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "rwuser") {gsub("="," "); print} }'` 
+           rouser=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "rouser") {gsub("="," "); print} }'`
+           rwcommunity=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "rwcommunity") {gsub("="," "); print} }'`
+           rocommunity=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "rocommunity") {gsub("="," "); print} }'`
+           rocommunity6=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "rocommunity6") {gsub("="," "); print} }'`
+           syslocation=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "syslocation") {gsub("="," "); print} }'`
+           syscontact=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "syscontact") {gsub("="," "); print} }'`
+           trap2sink=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "trap2sink") {gsub("="," "); print} }'`
+           informsink=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "informsink") {gsub("="," "); print} }'`
+           trapcommunity=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "trapcommunity") {gsub("="," "); print} }'`
+           authtrapenable=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "authtrapenable") {gsub("="," "); print} }'`
+           disk=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "disk") {gsub("="," "); print} }'`
+           clientaddr=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "clientaddr") {gsub("="," "); print} }'`
+         
+           if [ "${rwuser}" != "" ]; then
+               sed -i "s/^rwuser.*$/$rwuser/" $snmpdconfigfile
+           fi
+           if [ "${rouser}" != "" ]; then
+               sed -i "s/^rouser.*$/$rouser/" $snmpdconfigfile
+           fi
+           if [ "${rocommunity}" != "" ]; then
+               sed -i "s/^rocommunity .*$/$rocommunity/" $snmpdconfigfile
+           fi
+           if [[ "${rocommunity6}" != "" ]]; then
+               sed -i "s/^rocommunity6.*$/$rocommunity6/" $snmpdconfigfile
+           fi
+           if [[ "${rwcommunity}" != "" ]]; then
+               sed -i "s/^rocommunity6.*$/$rocommunity6/" $snmpdconfigfile
+           fi
+           if [ "${syslocation}" != "" ]; then
+               sed -i "s/^syslocation.*$/$syslocation/" $snmpdconfigfile
+           fi
+           if [ "${syscontact}" != "" ]; then
+               sed -i "s/^syscontact.*$/$syscontact/" $snmpdconfigfile
+           fi
+           if [ "${trap2sink}" != "" ]; then
+              linenum=`grep -n "^[ ]*trap2sink"  $snmpdconfigfile | cut -d: -f1 | tail -1`
+              sed -i '/^[ ]*trap2sink/d' $snmpdconfigfile  
+              PREV_IFS=$IFS
+              IFS=$'\n'
+   
+              for var in $trap2sink
+              do
+                  sed -i "${linenum} a ${var}" ${snmpdconfigfile}
+              done
+              IFS=$PREV_IFS
+
+           fi
+           if [ "${informsink}" != "" ]; then
+              linenum=`grep -n "^[ ]*informsink"  $snmpdconfigfile | cut -d: -f1 | tail -1`
+              sed -i '/^[ ]*informsink/d' $snmpdconfigfile
+              PREV_IFS=$IFS
+              IFS=$'\n'
+
+              for var in $informsink 
+              do
+                  sed -i "${linenum} a ${var}" ${snmpdconfigfile}
+              done
+              IFS=$PREV_IFS
+
+           fi
+           if [ "${trapcommunity}" != "" ]; then
+                sed -i "s/^trapcommunity.*$/$trapcommunity/" $snmpdconfigfile
+           fi
+           if [[ "${authtrapenable}" != "" ]]; then
+               sed -i '/^\#authtrapenable.*/a\'"${authtrapenable}"'' $snmpdconfigfile
+           fi
+           if [[ "${disk}" != "" ]]; then
+              PREV_IFS=$IFS
+              IFS=$'\n'
+              for i in $disk
+              do
+                  sed -i '/^\#disk \/opt 10%/a\'${i}'' $snmpdconfigfile
+              done
+              IFS=$PREV_IFS
+           fi
+           if [[ "${clientaddr}" != "" ]]; then
+              sed -i '/^\#clientaddr.*/a\'"${clientaddr}"'' $snmpdconfigfile
+           fi
+
+         fi #end snmpdconfigfile
+
+         if [ ! -r $pmfmagentconfigfile ]; then
+            echo "WARNING: The ${pmfmagentconfigfile} file does not exist"
+         else
+              pm_mem_thresholds=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "pm_mem_thresholds") {gsub("="," "); print} }'`
+              pm_cpu_thresholds=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "pm_cpu_thresholds") {gsub("="," "); print} } '`
+              SourceIp=`grep -v '#' ${bulkconfigfile} | awk  -F '=' '{ if($1 == "SourceIp") {gsub("="," "); print} }'`
+              if [[ "${pm_cpu_thresholds}" != "" ]]; then
+                 sed -i "s/^pm_cpu_thresholds.*$/$pm_cpu_thresholds/" $pmfmagentconfigfile
+              fi
+              if [[ "${pm_mem_thresholds}" != "" ]]; then
+                 sed -i "s/^pm_mem_thresholds.*$/$pm_mem_thresholds/" $pmfmagentconfigfile
+              fi
+              if [[ "${SourceIp}" != "" ]]; then
+                 sed -i "s/^SourceIp.*$/$SourceIp/" $pmfmagentconfigfile
+              fi
+          fi #end pmfmagentconfigfile
+
+      fi #end bulkconfigfile
+}
+#
+# provision radius server
+#
+function provisionradius
+{
+   if [ ! -r ${bulkconfigfile} ]; then
+      echo "error: the ${bulkconfigfile} file does not exist"  
+   else
+     if [ ! -r ${radiusservconfigfile} ]; then
+       echo "warning: the ${radiusservconfigfile} file does not exist"
+     else
+        sed -i 's/^[^#]/#&/g' $radiusservconfigfile
+        servcfg=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '/^server=/{print $2 }'`
+        if [ "${servcfg}" != "" ]; then
+           # delete the existing configration
+           sed -i '/^[^#]/d'  $radiusservconfigfile 
+ 
+           linenum1=$(${grep} -n "^#other-server" $radiusservconfigfile | tail -1 | cut -d: -f1)
+           linenum2=$(${grep} -n "^#127.0.0.1" $radiusservconfigfile | tail -1 | cut -d: -f1)
+           if [ ${linenum1} -gt ${linenum2} ]; then
+                linenum=$linenum1
+           else 
+                linenum=$linenum2
+           fi
+           prev_ifs=$ifs
+           ifs=$'\n'
+           for var in $servcfg
+           do
+              if [ -n "$linenum" ]; then
+                 sed -i ''"${linenum}"' a '"${var}"''  ${radiusservconfigfile}
+                 linenum=$((linenum+1))
+              else
+                 sed -i '$a  '"${var}"''  ${radiusservconfigfile}
+              fi
+           done
+           ifs=$prev_ifs
+        fi  # end servcfg
+     fi # end radiusservconfigfile
+      
+     if [ ! -r ${radiusmappingconfigfile} ]; then
+        echo "warning: the ${bulkconfigfile} file does not exist"
+     else
+         btsmap=`${grep} -v '#' ${bulkconfigfile} | ${awk} -f '=' '/^rolemap=/{print $2 }'`
+         if [ -n "$btsmap" ]; then
+            # delete the existing configuration
+            sed -i '/^[^#]/d'  $radiusmappingconfigfile
+            prev_ifs=$ifs
+            ifs=$'\n'
+            for var in $btsmap
+            do 
+              echo $var
+              if echo "$var" | ${grep} -q '^btsadmin' || echo "$var" | ${grep} -q '^btsuser' ; then
+                 sed -i '$a  '"${var}"''  ${radiusmappingconfigfile}
+              fi
+            done
+            ifs=$prev_ifs
+        fi
+     fi # end radiusmappingconfigfile
+   fi #end bulkconfigfile 
+}
+#
+# provision ldap config
+function provisionldap
+{
+  if [ ! -r ${bulkconfigfile} ]; then
+     echo "error: the ${bulkconfigfile} file does not exist"
+  else
+    if [ ! -r ${ldapconfigfile} ]; then
+       echo "warning: the ${ldapconfigfile} file does not exist"
+    else
+       host=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "host") {gsub("="," "); print} }'`
+       base=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "base") {gsub(""$1"=","$1"); print} }'`
+       uri=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "uri") {gsub("="," "); print} }'`    
+       port=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "port") {gsub("="," "); print} }'` 
+       passwd=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "passwd") {gsub("="," "); print} }'`
+       shadow=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "shadow") {gsub("="," "); print} }'`
+       group=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "group") {gsub("="," "); print} }'`
+       netgroup=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "netgroup") {gsub("="," "); print} }'`
+       sudoers=`grep -v '#' ${bulkconfigfile} | awk  -f '=' '{ if($1 == "sudoers") {gsub("="," "); print} }'`
+       if [ -n "{host}" ]; then
+          sed -i "s/^host*$/$host/" $ldapconfigfile
+       fi
+       if [ -n "${base}" ]; then
+          sed -i "s/^base*$/$base/" $ldapconfigfile  
+       fi
+       if [ -n "${uri}" ]; then
+           ##if the uri configuration existed in ldap config, then delete the config and sed new config.
+           ##else find the line of default value, then sed new config.
+           linenum=""
+           linenum1=$(${grep} -n "^uri" $ldapconfigfile | tail -1 | cut -d: -f1)
+           if [ -n "${linenum1}" ]; then
+              sed -i "/^uri/d" $ldapconfigfile
+              linenum=$linenum1
+           else
+              linenum=$(${grep} -n "^#uri" $ldapconfigfile | tail -1 | cut -d: -f1)
+              linenum=$(($linenum+1))
+           fi
+           if [ -n "${linenum}" ]; then
+              PREV_IFS=$IFS
+              IFS=$'\n'
+              for var in $uri
+              do
+                  sed -i "${linenum} a ${var}" $ldapconfigfile
+              done
+              IFS=$PREV_IFS
+           fi
+       fi #end uri
+       if [ -n "${port}" ]; then
+          linenum1=$(${grep} -n "^port" $ldapconfigfile | tail -1 | cut -d: -f1)
+          linenum2=$(${grep} -n "^#port" $ldapconfigfile | tail -1 | cut -d: -f1)
+          if [ -n "${linenum1}" ]; then
+              sed -i "/^port*/$port" $ldapconfigfile
+          elif [ -n "${linenum2}"]; then
+              sed -i "${linenum} a ${port}" $ldapconfigfile
+          fi
+
+       fi  
+       if [ -n "${passwd}" ]; then
+          sed -i "s/^passwd*$/$passwd/" $ldapconfigfile
+       fi 
+       if [ -n "${shadow}" ]; then
+          sed -i "s/^shadow*$/$shadow/" $ldapconfigfile
+       fi
+       if [ -n "${group}" ]; then
+          sed -i "s/^group*$/$group/" $ldapconfigfile
+       fi
+       if [ -n "${netgroup}" ]; then
+          sed -i "s/^netgroup*$/$netgroup/" $ldapconfigfile
+       fi
+       if [ -n "${sudoers}" ]; then
+          sed -i "s/^sudoers*$/$sudoers/" $ldapconfigfile
+       fi
+     fi #end ldapconfigfile
+  fi #end bulkconfigfile
+
+}
+################################################
+#      start this shell stricpt                #
+################################################
+
+# Define trap function
+function trapexit {
+    echo "Received a signal during processing, exiting"
+    echo "Received a signal during processing, exiting" >>${logfile} 2>&1
+    exit 1
+}
+#
+# Set up traps so we can clean up if we get a signal
+#
+trap trapexit SIGINT SIGTERM SIGQUIT SIGHUP SIGKILL
+
+#
+#  Make sure we are using the U.S. English command formats
+#
+export LC_ALL="en_US.ISO8859-1"
+
+realid=`${ID} | ${CUT} -f1 -d " "`
+if [ "${realid}" != "${userid}" ]; then
+       echo "This script must be run by root, exiting"
+       exit 1;
+fi
+
+echo "Please do not enter <ctrl c> or other signal to end this script (script version ${version})"
+
+if [ ! -d ${tempdirectory} ]; then
+    ${MKDIR} -p ${tempdirectory}
+    ${CHMOD} 0700 ${tempdirectory}
+    ${CHOWN} root:root ${tempdirectory}
+    if [ ! -d ${tempdirectory} ]; then
+        echo "Temporary directory ${tempdirectory} doesn't exist, exiting"
+        exit 1
+    fi
+fi
+
+
+if [ "${PWD}" != "${tempdirectory}" ]; then
+    cd ${tempdirectory}
+    if [ "${PWD}" != "${tempdirectory}" ]; then
+         echo "This script must be run in the ${tempdirectory} directory, exiting"
+         exit;
+    fi
+fi
+
+################################################
+#      Main  of the script                     #
+################################################
+
+firstargument="${1}"
+value=`echo "${firstargument}" |sed -n '/^[Rr][Ee][Tt][Rr][Ii][Ee][Vv][Ee]$/p'`
+if [ \( "${value}" != "" \) -a \( "${value}" == "${firstargument}" \) ]; then
+     firstargument="${retrieveargument}"
+fi
+
+value=`echo "${firstargument}" | sed -n '/^[Pp][Rr][Oo][Vv][Ii][Ss][Ii][Oo][Nn]$/p'`
+if [ \( "${value}" != "" \) -a \( "${value}" == "${firstargument}" \) ]; then
+    firstargument="${provisionagrument}"
+fi
+
+if [ "${firstargument}" == "${retrieveargument}" ]; then
+    echo >/dev/null 2>&1
+elif [ "${firstargument}" == "${provisionagrument}" ]; then
+    echo >/dev/null 2>&1
+else
+    echo "Command Syntax: ${0} ${retrieveargument}|${provisionagrument}"
+    exit 0
+fi
+
+
+#
+# Check to see if the log file already exists, if not, create it
+#
+if [ ! -r ${logfile} ]; then
+   >${logfile}
+fi
+${CHMOD} 0644 ${logfile} >/dev/null 2>&1
+${CHOWN} root:root ${logfile} >/dev/null 2>&1
+
+#
+# Set / read the rollover of the log file
+#
+configlogrotate
+${LOGROTATE} /etc/logrotate.conf >/dev/null 2>&1
+
+#
+# Start Retrive function
+#
+if [ "${firstargument}" == "${retrieveargument}" ]; then
+
+#   backup bulkconfig file
+    if [ -f ${bulkconfigfile} ]; then
+       if [ ! -r ${bulkconfigfile} ]; then
+          ${CHMOD} 0644 ${bulkconfigfile} >/dev/null 2>&1
+          ${CHOWN} root:root ${bulkconfigfile} >/dev/null 2>&1 
+       fi
+       ${MV} ${bulkconfigfile} ${bulkconfigoldfile}
+    fi
+#   copy template file to ini file
+    if [ -f ${bulktemplatefile} ]; then
+       if [ ! -r ${bulktemplatefile} ]; then
+          ${CHMOD} 0644 ${bulktemplatefile} >/dev/null 2>&1
+          ${CHOWN} root:root ${bulktemplatefile} >/dev/null 2>&1
+       fi
+       ${CP} ${bulktemplatefile}  ${bulkconfigfile}
+    else
+       echo "ERROR: bulk template file lost."
+       exit 1 
+    fi
+#  retrieve hosts config file
+    if [ "${checkhostsconfig}" == "YES" ]; then
+         retrievehostconfig
+    fi
+# retrieve dns config file
+    if [ "${checkdnsconfig}" == "YES" ]; then
+         retrievednsconfig
+    fi
+# retrieve ntp config file
+   if [ "${checkntpconfig}" == "YES" ]; then
+         retrieventpconfig 
+   fi
+# retrieve timezone config
+    if [ "${checktimezoneconfig}" == "YES" ]; then
+       retrievetimezoneconfig
+    fi
+# retrieve network config file
+   if [ "${checknetworkconfig}" == "YES" ]; then
+        retrievenetworkconfig
+   fi
+#  retrieve snmp  config file
+    if [ "${checksnampconfig}" == "YES" ]; then
+         retrievesnmpconfig
+    fi
+#  retrieve radius config file
+    if [ "${checkradiusconfig}" == "YES" ]; then
+          retrieveradiusconfig
+    fi
+# retrieve ldap config file
+   if [ "${checkldapconfig}" == "YES" ]; then
+        retrieveldapconfig
+   fi
+fi
+
+#
+# provision
+#
+if [ "${firstargument}" == "${provisionagrument}" ]; then
+# provision radius 
+   if [ "${checkradiusconfig}" == "YES" ]; then
+      provisionradius
+   fi
+# provision snmp
+   if [ "${checksnampconfig}" == "YES" ]; then
+      provisionsnmp
+   fi
+# provision hosts
+   if [ "${checkhostsconfig}" == "YES" ]; then
+      provisionhosts
+   fi
+# provision dns
+   if [ "${checkdnsconfig}" == "YES" ]; then
+      provisiondns
+   fi
+# provision ntp
+   if [ "${checkntpconfig}" == "YES" ]; then
+      provisionntp
+   fi
+fi
